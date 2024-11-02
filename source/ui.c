@@ -31,9 +31,9 @@ void ui_init(void) {
     printf("\\__,_|_\\__,_|_| ");
 
 #ifdef BLOCKSDS
-    printf("v0.3  / BlocksDS");
+    printf("v0.4  / BlocksDS");
 #else
-    printf("v0.3  /    dkARM");
+    printf("v0.4  /    dkARM");
 #endif
     printf("\n\x1b[37m%s\x1b[39m\n\n", io_dldi_data->friendlyName);
 

@@ -22,6 +22,8 @@ int vbuf_enabled = 0;
 bool lookup_cache_enabled = true;
 bool fat_initialized = false;
 
+extern const DISC_INTERFACE __io_dsisd;
+
 static inline uint32_t my_rand(void) {
     static uint32_t seed = 0;
     seed = seed * 0xFDB97531 + 0x2468ACE;
@@ -158,6 +160,49 @@ static void benchmark_read(bool sequential) {
     fclose(file);
 }
 
+static void benchmark_read_raw(bool dsi_sdmmc, bool sequential) {
+    fat_init();
+    const DISC_INTERFACE *io = dsi_sdmmc ? &__io_dsisd : dldiGetInternal();
+    printf("      \x1b[46mTesting raw reads...\x1b[39m\n\n");
+
+    int reads_count = 4;
+    for (int curr_size = io_buffer_size; curr_size >= 512; curr_size >>= 1) {
+        if (curr_size >= 1024*1024) {
+            printf("  %3d MiB", curr_size >> 20);
+        } else if (curr_size >= 1024) {
+            printf("  %3d KiB", curr_size >> 10);
+            reads_count <<= 1;
+        } else {
+            printf("  0.5 KiB");
+        }
+
+        uint32_t ticks_start = get_ticks();
+        uint32_t reads = 0;
+        int pos = 0;
+	if (sequential) {
+            int pos = 0;
+	    while (reads < reads_count) {
+                if (!io->readSectors(pos >> 9, curr_size >> 9, io_buffer))
+                    break;
+		pos = (pos + curr_size) & 0x3FFFFF;
+                reads++;
+            }
+	} else {
+	    while (reads < reads_count) {
+                pos = ((my_rand() & (~0x1FF)) & 0x3FFFFF) + io_read_offset;
+                if (!io->readSectors(pos >> 9, curr_size >> 9, io_buffer))
+                    break;
+                reads++;
+            }
+	}
+        uint32_t ticks_end = get_ticks();
+        double read_kilobytes = (curr_size / 1024.0) * reads_count;
+        uint32_t ticks_diff = ticks_end - ticks_start;
+        print_kilobytes_per_second(read_kilobytes, ticks_diff, reads < reads_count);
+        swiDelay(5000000);
+    }
+}
+
 static void benchmark_write(bool sequential) {
     fat_init();
     FILE *file = fopen(pad_filename, "r+b");
@@ -271,8 +316,6 @@ static void test_readback(void) {
     fclose(file);
 }
 
-extern const DISC_INTERFACE __io_dsisd;
-
 static void test_errata(bool dsi_sdmmc) {
     const DISC_INTERFACE *io = dsi_sdmmc ? &__io_dsisd : dldiGetInternal();
     char msg_buffer[33];
@@ -324,7 +367,7 @@ static bool run_menu(int options_count, int *selection) {
 
         swiWaitForVBlank();
         scanKeys();
-        uint32_t keys_down = keysDown();
+        uint32_t keys_down = keysDownRepeat();
         if(keys_down & KEY_A) return true;
         if(keys_down & (KEY_B | KEY_START)) return false;
         if(keys_down & KEY_UP) (*selection)--;
@@ -354,6 +397,7 @@ int main(int argc, char **argv) {
     defaultExceptionHandler();
     powerOn(POWER_ALL_2D);
     ui_init();
+    keysSetRepeat(18, 6);
 
     io_buffer_size = 2*1024*1024;
     io_buffer = malloc(io_buffer_size);
@@ -381,23 +425,25 @@ int main(int argc, char **argv) {
             case 1: printf("\x1b[2J"); benchmark_write(false); press_start_to_continue(); break;
             case 2: printf("\x1b[2J"); benchmark_read(true); press_start_to_continue(); break;
             case 3: printf("\x1b[2J"); benchmark_write(true); press_start_to_continue(); break;
-            case 4: printf("\x1b[2J"); test_readback(); press_start_to_continue(); break;
-            case 5: printf("\x1b[2J"); test_errata(false); press_start_to_continue(); break;
-            case 6: printf("\x1b[2J"); if (isDSiMode()) { test_errata(true); press_start_to_continue(); } break;
-            case 7: REG_EXMEMCNT ^= (1 << 15); break;
-            case 8:
+            case 4: printf("\x1b[2J"); benchmark_read_raw(false, false); press_start_to_continue(); break;
+            case 5: printf("\x1b[2J"); benchmark_read_raw(false, true); press_start_to_continue(); break;
+            case 6: printf("\x1b[2J"); test_readback(); press_start_to_continue(); break;
+            case 7: printf("\x1b[2J"); test_errata(false); press_start_to_continue(); break;
+            case 8: printf("\x1b[2J"); if (isDSiMode()) { test_errata(true); press_start_to_continue(); } break;
+            case 9: REG_EXMEMCNT ^= (1 << 15); break;
+            case 10:
                 if (io_read_offset == 0) io_read_offset = 1;
                 else if (io_read_offset >= 256) io_read_offset = 0;
                 else io_read_offset <<= 1;
                 break;
-            case 9:
+            case 11:
                 if (vbuf_enabled == 0) vbuf_enabled = 512;
                 else if (vbuf_enabled >= 65536) vbuf_enabled = 0;
                 else vbuf_enabled <<= 1;
                 break;
 #ifdef BLOCKSDS
-            case 10: lookup_cache_enabled = !lookup_cache_enabled; break;
-            case 11: if (!fat_initialized) dldiSetMode(dldiGetMode() == DLDI_MODE_ARM7 ? DLDI_MODE_ARM9 : DLDI_MODE_ARM7); break;
+            case 12: lookup_cache_enabled = !lookup_cache_enabled; break;
+            case 13: if (!fat_initialized) dldiSetMode(dldiGetMode() == DLDI_MODE_ARM7 ? DLDI_MODE_ARM9 : DLDI_MODE_ARM7); break;
 #endif
         }
 
@@ -405,18 +451,20 @@ int main(int argc, char **argv) {
         snprintf(options[1], 33, "Bench. random writes");
         snprintf(options[2], 33, "Bench. sequential reads");
         snprintf(options[3], 33, "Bench. sequential writes");
-        snprintf(options[4], 33, "Test random writes");
-        snprintf(options[5], 33, "Test for erratas/bugs");
-        snprintf(options[6], 33, "Test for erratas (TWL slot)");
-        snprintf(options[7], 33, "Main RAM priority: %s", (REG_EXMEMCNT & (1 << 15)) ? "ARM7" : "ARM9");
-        snprintf(options[8], 33, "Byte-in-sector offset: %d", io_read_offset);
-        snprintf(options[9], 33, "C buffer size: %d", vbuf_enabled);
+        snprintf(options[4], 33, "Bench. raw rand. reads");
+        snprintf(options[5], 33, "Bench. raw seq. reads");
+        snprintf(options[6], 33, "Test random writes");
+        snprintf(options[7], 33, "Test for erratas/bugs");
+        snprintf(options[8], 33, "Test for erratas (TWL slot)");
+        snprintf(options[9], 33, "Main RAM priority: %s", (REG_EXMEMCNT & (1 << 15)) ? "ARM7" : "ARM9");
+        snprintf(options[10], 33, "Byte-in-sector offset: %d", io_read_offset);
+        snprintf(options[11], 33, "C buffer size: %d", vbuf_enabled);
 #ifdef BLOCKSDS
-        snprintf(options[10], 33, "Seek lookup cache: %s", lookup_cache_enabled ? "Yes" : "No");
-        snprintf(options[11], 33, "Run DLDI on CPU: %s", dldiGetMode() == DLDI_MODE_ARM7 ? "ARM7" : "ARM9");
-        options_count = 12;
+        snprintf(options[12], 33, "Seek lookup cache: %s", lookup_cache_enabled ? "Yes" : "No");
+        snprintf(options[13], 33, "Run DLDI on CPU: %s", dldiGetMode() == DLDI_MODE_ARM7 ? "ARM7" : "ARM9");
+        options_count = 14;
 #else
-        options_count = 10;
+        options_count = 12;
 #endif
     } while (run_menu(options_count, &selection));
 

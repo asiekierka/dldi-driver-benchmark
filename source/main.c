@@ -18,6 +18,7 @@ const char *pad_filename = "/benchmark_pad.bin";
 uint8_t *io_buffer;
 int io_buffer_size;
 int io_read_offset = 0;
+int vbuf_enabled = 0;
 bool lookup_cache_enabled = true;
 bool fat_initialized = false;
 
@@ -112,6 +113,8 @@ static void benchmark_read(bool sequential) {
     if (lookup_cache_enabled)
 	fatInitLookupCacheFile(file, 65536);
 #endif
+    if (vbuf_enabled)
+        setvbuf(file, NULL, _IOFBF, vbuf_enabled);
     printf("        \x1b[46mTesting reads...\x1b[39m\n\n");
 
     int reads_count = 4;
@@ -167,6 +170,8 @@ static void benchmark_write(bool sequential) {
     if (lookup_cache_enabled)
         fatInitLookupCacheFile(file, 65536);
 #endif
+    if (vbuf_enabled)
+        setvbuf(file, NULL, _IOFBF, vbuf_enabled);
     printf("        \x1b[46mTesting writes...\x1b[39m\n\n");
 
     int reads_count = 1024;
@@ -228,6 +233,8 @@ static void test_readback(void) {
     if (lookup_cache_enabled)
         fatInitLookupCacheFile(file, 65536);
 #endif
+    if (vbuf_enabled)
+        setvbuf(file, NULL, _IOFBF, vbuf_enabled);
     printf("       \x1b[46mTesting readback...\x1b[39m\n\n");
 
     int reads_count = 1024;
@@ -264,8 +271,10 @@ static void test_readback(void) {
     fclose(file);
 }
 
-static void test_errata(void) {
-    const DISC_INTERFACE *io = dldiGetInternal();
+extern const DISC_INTERFACE __io_dsisd;
+
+static void test_errata(bool dsi_sdmmc) {
+    const DISC_INTERFACE *io = dsi_sdmmc ? &__io_dsisd : dldiGetInternal();
     char msg_buffer[33];
     uint32_t sector_count;
 
@@ -273,7 +282,13 @@ static void test_errata(void) {
     printf("  ( Your console may freeze! )\x1b\[39m\n\n");
 
     printf("  Sector count");
-    sector_count = msc_find_block_count();
+#ifdef __BLOCKSDS__
+    sector_count = dsi_sdmmc ? sdmmc_GetSectors() : msc_find_block_count(io);
+    if (dsi_sdmmc && !sector_count)
+        sector_count = msc_find_block_count(io);
+#else
+    sector_count = msc_find_block_count(io);
+#endif
     sprintf(msg_buffer, "%ld", sector_count);
     printf("\x1b[32D\x1b[%dC%s\x1b[39m\n", 32 - 2 - strlen(msg_buffer), msg_buffer);
 
@@ -340,12 +355,6 @@ int main(int argc, char **argv) {
     powerOn(POWER_ALL_2D);
     ui_init();
 
-    if (argc <= 0 || argv[0][0] == 0) {
-        ui_select_top();
-        printf("\x1b[41mCould not find argv!\n");
-        goto exit;
-    }
-
     io_buffer_size = 2*1024*1024;
     io_buffer = malloc(io_buffer_size);
     if (io_buffer == NULL) {
@@ -373,16 +382,22 @@ int main(int argc, char **argv) {
             case 2: printf("\x1b[2J"); benchmark_read(true); press_start_to_continue(); break;
             case 3: printf("\x1b[2J"); benchmark_write(true); press_start_to_continue(); break;
             case 4: printf("\x1b[2J"); test_readback(); press_start_to_continue(); break;
-            case 5: printf("\x1b[2J"); test_errata(); press_start_to_continue(); break;
-            case 6: REG_EXMEMCNT ^= (1 << 15); break;
-            case 7:
+            case 5: printf("\x1b[2J"); test_errata(false); press_start_to_continue(); break;
+            case 6: printf("\x1b[2J"); if (isDSiMode()) { test_errata(true); press_start_to_continue(); } break;
+            case 7: REG_EXMEMCNT ^= (1 << 15); break;
+            case 8:
                 if (io_read_offset == 0) io_read_offset = 1;
                 else if (io_read_offset >= 256) io_read_offset = 0;
                 else io_read_offset <<= 1;
                 break;
+            case 9:
+                if (vbuf_enabled == 0) vbuf_enabled = 512;
+                else if (vbuf_enabled >= 65536) vbuf_enabled = 0;
+                else vbuf_enabled <<= 1;
+                break;
 #ifdef BLOCKSDS
-            case 8: lookup_cache_enabled = !lookup_cache_enabled; break;
-            case 9: if (!fat_initialized) dldiSetMode(dldiGetMode() == DLDI_MODE_ARM7 ? DLDI_MODE_ARM9 : DLDI_MODE_ARM7); break;
+            case 10: lookup_cache_enabled = !lookup_cache_enabled; break;
+            case 11: if (!fat_initialized) dldiSetMode(dldiGetMode() == DLDI_MODE_ARM7 ? DLDI_MODE_ARM9 : DLDI_MODE_ARM7); break;
 #endif
         }
 
@@ -392,14 +407,16 @@ int main(int argc, char **argv) {
         snprintf(options[3], 33, "Bench. sequential writes");
         snprintf(options[4], 33, "Test random writes");
         snprintf(options[5], 33, "Test for erratas/bugs");
-        snprintf(options[6], 33, "RAM priority: %s", (REG_EXMEMCNT & (1 << 15)) ? "ARM7" : "ARM9");
-        snprintf(options[7], 33, "Byte offset: %d", io_read_offset);
+        snprintf(options[6], 33, "Test for erratas (TWL slot)");
+        snprintf(options[7], 33, "Main RAM priority: %s", (REG_EXMEMCNT & (1 << 15)) ? "ARM7" : "ARM9");
+        snprintf(options[8], 33, "Byte-in-sector offset: %d", io_read_offset);
+        snprintf(options[9], 33, "C buffer size: %d", vbuf_enabled);
 #ifdef BLOCKSDS
-        snprintf(options[8], 33, "Seek lookup cache: %s", lookup_cache_enabled ? "Yes" : "No");
-        snprintf(options[9], 33, "DLDI CPU: %s", dldiGetMode() == DLDI_MODE_ARM7 ? "ARM7" : "ARM9");
-        options_count = 10;
+        snprintf(options[10], 33, "Seek lookup cache: %s", lookup_cache_enabled ? "Yes" : "No");
+        snprintf(options[11], 33, "Run DLDI on CPU: %s", dldiGetMode() == DLDI_MODE_ARM7 ? "ARM7" : "ARM9");
+        options_count = 12;
 #else
-        options_count = 8;
+        options_count = 10;
 #endif
     } while (run_menu(options_count, &selection));
 

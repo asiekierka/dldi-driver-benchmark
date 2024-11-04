@@ -356,6 +356,7 @@ static bool run_menu(int options_count, int *selection) {
     }
     int menu_left = ((30 - max_option_width) >> 1) - 1;
 
+    keysSetRepeat(18, 6);
     while (1) {
         ui_select_bottom();
         if (last_selection != *selection) {
@@ -397,7 +398,6 @@ int main(int argc, char **argv) {
     defaultExceptionHandler();
     powerOn(POWER_ALL_2D);
     ui_init();
-    keysSetRepeat(18, 6);
 
     io_buffer_size = 2*1024*1024;
     io_buffer = malloc(io_buffer_size);

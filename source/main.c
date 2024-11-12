@@ -31,7 +31,11 @@ static inline uint32_t my_rand(void) {
 }
 
 static inline uint32_t get_ticks(void) {
+#ifdef CALICO
+    return tickGetCount() >> 2;
+#else
     return TIMER0_DATA | (TIMER1_DATA << 16);
+#endif
 }
 
 static void randomize_buffer(void *buffer, uint32_t size) {
@@ -160,6 +164,7 @@ static void benchmark_read(bool sequential) {
     fclose(file);
 }
 
+#ifndef CALICO
 static void benchmark_read_raw(bool dsi_sdmmc, bool sequential) {
     fat_init();
     const DISC_INTERFACE *io = dsi_sdmmc ? &__io_dsisd : dldiGetInternal();
@@ -202,6 +207,7 @@ static void benchmark_read_raw(bool dsi_sdmmc, bool sequential) {
         swiDelay(5000000);
     }
 }
+#endif
 
 static void benchmark_write(bool sequential) {
     fat_init();
@@ -316,6 +322,7 @@ static void test_readback(void) {
     fclose(file);
 }
 
+#ifndef CALICO
 static void test_errata(bool dsi_sdmmc) {
     const DISC_INTERFACE *io = dsi_sdmmc ? &__io_dsisd : dldiGetInternal();
     char msg_buffer[33];
@@ -344,6 +351,7 @@ static void test_errata(bool dsi_sdmmc) {
         print_bool_status(true);
     }
 }
+#endif
 
 char options[20][33];
 
@@ -357,7 +365,11 @@ static bool run_menu(int options_count, int *selection) {
     int menu_left = ((30 - max_option_width) >> 1) - 1;
 
     keysSetRepeat(18, 6);
+#ifdef CALICO
+    while (pmMainLoop()) {
+#else
     while (1) {
+#endif
         ui_select_bottom();
         if (last_selection != *selection) {
             printf("\x1b[2J"); // Clear console
@@ -376,6 +388,7 @@ static bool run_menu(int options_count, int *selection) {
         if((*selection) < 0) *selection = 0;
         if((*selection) >= options_count) *selection = options_count-1;
     }
+    return false;
 }
 
 static void press_start_to_continue(void) {
@@ -383,7 +396,11 @@ static void press_start_to_continue(void) {
     printf("\x1b[39m\n");
     printf("Press START to continue\n");
 
+#ifdef CALICO
+    while (pmMainLoop()) {
+#else
     while (1) {
+#endif
         swiWaitForVBlank();
 
         scanKeys();
@@ -395,8 +412,13 @@ static void press_start_to_continue(void) {
 }
 
 int main(int argc, char **argv) {
+#ifdef CALICO
+    tickInit();
+#else
     defaultExceptionHandler();
     powerOn(POWER_ALL_2D);
+#endif
+
     ui_init();
 
     io_buffer_size = 2*1024*1024;
@@ -407,10 +429,12 @@ int main(int argc, char **argv) {
         goto exit;
     }
 
+#ifndef CALICO
     TIMER0_DATA = 0;
     TIMER1_DATA = 0;
     TIMER0_CR = TIMER_ENABLE | TIMER_DIV_256;
     TIMER1_CR = TIMER_ENABLE | TIMER_CASCADE;
+#endif
 
 #ifdef BLOCKSDS
     dldiSetMode(DLDI_MODE_ARM9);
@@ -425,25 +449,27 @@ int main(int argc, char **argv) {
             case 1: printf("\x1b[2J"); benchmark_write(false); press_start_to_continue(); break;
             case 2: printf("\x1b[2J"); benchmark_read(true); press_start_to_continue(); break;
             case 3: printf("\x1b[2J"); benchmark_write(true); press_start_to_continue(); break;
-            case 4: printf("\x1b[2J"); benchmark_read_raw(false, false); press_start_to_continue(); break;
-            case 5: printf("\x1b[2J"); benchmark_read_raw(false, true); press_start_to_continue(); break;
-            case 6: printf("\x1b[2J"); test_readback(); press_start_to_continue(); break;
-            case 7: printf("\x1b[2J"); test_errata(false); press_start_to_continue(); break;
-            case 8: printf("\x1b[2J"); if (isDSiMode()) { test_errata(true); press_start_to_continue(); } break;
-            case 9: REG_EXMEMCNT ^= (1 << 15); break;
-            case 10:
+            case 4: printf("\x1b[2J"); test_readback(); press_start_to_continue(); break;
+            case 5:
                 if (io_read_offset == 0) io_read_offset = 1;
                 else if (io_read_offset >= 256) io_read_offset = 0;
                 else io_read_offset <<= 1;
                 break;
-            case 11:
+            case 6:
                 if (vbuf_enabled == 0) vbuf_enabled = 512;
                 else if (vbuf_enabled >= 65536) vbuf_enabled = 0;
                 else vbuf_enabled <<= 1;
                 break;
+#ifndef CALICO
+            case 7: printf("\x1b[2J"); benchmark_read_raw(false, false); press_start_to_continue(); break;
+            case 8: printf("\x1b[2J"); benchmark_read_raw(false, true); press_start_to_continue(); break;
+            case 9: printf("\x1b[2J"); test_errata(false); press_start_to_continue(); break;
+            case 10: printf("\x1b[2J"); if (isDSiMode()) { test_errata(true); press_start_to_continue(); } break;
+            case 11: REG_EXMEMCNT ^= (1 << 15); break;
 #ifdef BLOCKSDS
             case 12: lookup_cache_enabled = !lookup_cache_enabled; break;
             case 13: if (!fat_initialized) dldiSetMode(dldiGetMode() == DLDI_MODE_ARM7 ? DLDI_MODE_ARM9 : DLDI_MODE_ARM7); break;
+#endif
 #endif
         }
 
@@ -451,20 +477,24 @@ int main(int argc, char **argv) {
         snprintf(options[1], 33, "Bench. random writes");
         snprintf(options[2], 33, "Bench. sequential reads");
         snprintf(options[3], 33, "Bench. sequential writes");
-        snprintf(options[4], 33, "Bench. raw rand. reads");
-        snprintf(options[5], 33, "Bench. raw seq. reads");
-        snprintf(options[6], 33, "Test random writes");
-        snprintf(options[7], 33, "Test for erratas/bugs");
-        snprintf(options[8], 33, "Test for erratas (TWL slot)");
-        snprintf(options[9], 33, "Main RAM priority: %s", (REG_EXMEMCNT & (1 << 15)) ? "ARM7" : "ARM9");
-        snprintf(options[10], 33, "Byte-in-sector offset: %d", io_read_offset);
-        snprintf(options[11], 33, "C buffer size: %d", vbuf_enabled);
+        snprintf(options[4], 33, "Test random writes");
+        snprintf(options[5], 33, "Byte-in-sector offset: %d", io_read_offset);
+        snprintf(options[6], 33, "C buffer size: %d", vbuf_enabled);
+#ifndef CALICO
+        snprintf(options[7], 33, "Bench. raw rand. reads");
+        snprintf(options[8], 33, "Bench. raw seq. reads");
+        snprintf(options[9], 33, "Test for erratas/bugs");
+        snprintf(options[10], 33, "Test for erratas (TWL slot)");
+        snprintf(options[11], 33, "Main RAM priority: %s", (REG_EXMEMCNT & (1 << 15)) ? "ARM7" : "ARM9");
 #ifdef BLOCKSDS
         snprintf(options[12], 33, "Seek lookup cache: %s", lookup_cache_enabled ? "Yes" : "No");
         snprintf(options[13], 33, "Run DLDI on CPU: %s", dldiGetMode() == DLDI_MODE_ARM7 ? "ARM7" : "ARM9");
         options_count = 14;
-#else
+#else /* !BLOCKSDS */
         options_count = 12;
+#endif
+#else /* CALICO */
+	options_count = 7;
 #endif
     } while (run_menu(options_count, &selection));
 
@@ -473,8 +503,11 @@ exit:
     printf("\x1b[39m\n");
     printf("Press START to exit to loader\n");
 
-    while (1)
-    {
+#ifdef CALICO
+    while (pmMainLoop()) {
+#else
+    while (1) {
+#endif
         swiWaitForVBlank();
 
         scanKeys();
